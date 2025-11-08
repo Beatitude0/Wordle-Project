@@ -25,8 +25,10 @@ class _GameScreenState extends State<GameScreen> {
   final TextEditingController _controller = TextEditingController();
   late List<String> _dictionary;
   String _targetWord = '';
-  List<String> _guesses = [];
-  final int _maxGuesses = 6; // Total allowed guesses should be 6
+  final List<List<Color>> _colorHistory = [];
+  final List<String> _guesses = [];
+  static const int _maxGuesses = 6; // Total allowed guesses should be 6
+  static const int _wordLength = 5; // Each word is 5 letters long
   Map<String, Color> _keyboardColors = {
     for (var c in 'QWERTYUIOPASDFGHJKLZXCVBNM'.split(''))
       c: Colors.grey.shade300,
@@ -45,13 +47,13 @@ class _GameScreenState extends State<GameScreen> {
       _dictionary = dict
           .split('\n')
           .map((w) => w.trim().toLowerCase())
-          .where((w) => w.length == 5)
+          .where((w) => w.length == _wordLength)
           .toList();
 
       _targetWord = _dictionary[Random().nextInt(_dictionary.length)];
     });
   }
-
+/*
   // Figures out what color each tile should be
   Color _tileColor(String guess, int index) {
     if (_targetWord[index] == guess[index]) {
@@ -62,26 +64,61 @@ class _GameScreenState extends State<GameScreen> {
       return Colors.grey; // changed from red to grey for better UX
     }
   }
+*/
+
+  List<Color> _evaluateGuess(String guess, String target) {
+    guess = guess.toLowerCase();
+    target = target.toLowerCase();
+
+    final List<Color> colors = List.filled(guess.length, Colors.grey);
+    final List<bool> used = List.filled(target.length, false);
+
+    // Pass 1: Mark greens and consume target positions
+    for (int i = 0; i < guess.length; i++) {
+      if (guess[i] == target[i]) {
+        colors[i] = Colors.green;
+        used[i] = true;
+      }
+    }
+
+    // Pass 2: Mark yellows for remaining available letters
+    for (int i = 0; i < guess.length; i++) {
+      if (colors[i] == Colors.green) continue;
+
+      for (int j = 0; j < target.length; j++) {
+        if (!used[j] && guess[i] == target[j]) {
+          colors[i] = Colors.yellow;
+          used[j] = true;
+          break;
+        }
+      }
+    }
+
+    return colors;
+  }
 
   // Updates the on-screen keyboard colors after each guess, so the player can see which letters they’ve already tried
-  void _updateKeyboard(String guess) {
+  void _updateKeyboard(String guess, List<Color> rowColors) {
     for (int i = 0; i < guess.length; i++) {
-      String letter = guess[i].toUpperCase();
-      Color newColor = _tileColor(guess, i);
+      final letter = guess[i].toUpperCase();
+      final color = rowColors[i];
 
-      // Priority order: Green > Yellow > Red
-      if (_keyboardColors[letter] == Colors.green) continue;
-      if (_keyboardColors[letter] == Colors.yellow && newColor == Colors.grey)
-        continue;
+      final current = _keyboardColors[letter];
 
-      _keyboardColors[letter] = newColor;
+      // Keep the best (highest) colour seen so far
+      if (current == Colors.green) continue; // green stays
+      if (current == Colors.yellow && color == Colors.grey) {
+        continue; // don’t downgrade
+      }
+
+      _keyboardColors[letter] = color;
     }
   }
 
   // Displays a win dialog when the player guesses the word correctly,
   // showing a smiley face, the correct word, and providing a button
   // that both closes the dialog and resets the game state for a new round
-  void _showWinDialog() {
+  /*void _showWinDialog() {
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -143,6 +180,77 @@ class _GameScreenState extends State<GameScreen> {
       },
     );
   }
+*/
+
+  void _showEndDialog({required bool isWin}) {
+    final titleEmoji = isWin ? ":D" : ":(";
+    final titleColor = isWin ? Colors.green : Colors.red;
+    final message = isWin
+        ? "You guessed it!\nThe word was: ${_targetWord.toUpperCase()}"
+        : "Out of guesses!\nThe word was: ${_targetWord.toUpperCase()}";
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          backgroundColor: Colors.white,
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                titleEmoji,
+                style: TextStyle(
+                  fontSize: 64,
+                  color: titleColor,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                message,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontFamily: 'Courier',
+                  fontSize: 20,
+                  color: Colors.pink,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop(); // Close dialog
+                // Reset the game
+                setState(() {
+                  _colorHistory.clear();
+                  _guesses.clear();
+                  _controller.clear();
+                  _targetWord =
+                      _dictionary[Random().nextInt(_dictionary.length)];
+                  _keyboardColors = {
+                    for (var c in 'QWERTYUIOPASDFGHJKLZXCVBNM'.split(''))
+                      c: Colors.grey.shade300,
+                  };
+                });
+              },
+              child: const Text(
+                "New Game",
+                style: TextStyle(
+                  fontFamily: 'Courier',
+                  color: Colors.pink,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 24,
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
 
   // resolve and reset game
   void _resetGame() {
@@ -181,6 +289,7 @@ class _GameScreenState extends State<GameScreen> {
                 Navigator.of(context).pop(); // close dialog
                 // Now reset the game
                 setState(() {
+                  _colorHistory.clear();
                   _guesses.clear();
                   _controller.clear();
                   _targetWord =
@@ -235,18 +344,25 @@ class _GameScreenState extends State<GameScreen> {
       _showSnackBar("You already guessed $guess!");
       return;
     }
-
+/*
     setState(() {
       _guesses.add(guess);
       _updateKeyboard(guess); // update colors here
     });
+*/
+    setState(() {
+      _guesses.add(guess);
+      final rowColors = _evaluateGuess(guess, _targetWord);
+      _colorHistory.add(rowColors);
+      _updateKeyboard(guess, rowColors); // new keyboard update below
+    });
 
     if (guess == _targetWord) {
-      _showWinDialog();
-      _showSnackBar("You win!");
+      _showEndDialog(isWin: true);
+      // _showSnackBar("You win!");
     } else if (_guesses.length >= _maxGuesses) {
-      _resetGame();
-      _showSnackBar("Out of guesses! Word was $_targetWord");
+      _showEndDialog(isWin: false);
+      // _showSnackBar("Out of guesses! Word was $_targetWord");
     }
   }
 
@@ -299,18 +415,18 @@ class _GameScreenState extends State<GameScreen> {
             Expanded(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
-                children: List.generate(6, (rowIndex) {
+                children: List.generate(_maxGuesses, (rowIndex) {
                   String? guess =
                       rowIndex < _guesses.length ? _guesses[rowIndex] : null;
                   return Row(
                     mainAxisAlignment: MainAxisAlignment.center,
-                    children: List.generate(5, (colIndex) {
+                    children: List.generate(_wordLength, (colIndex) {
                       String letter = '';
                       Color bgColor = Colors.grey.shade300;
 
                       if (guess != null && colIndex < guess.length) {
                         letter = guess[colIndex].toUpperCase();
-                        bgColor = _tileColor(guess, colIndex);
+                        bgColor = _colorHistory[rowIndex][colIndex];
                       }
 
                       return Container(
