@@ -7,7 +7,8 @@ import 'home_screen.dart';
 void main() {
   runApp(
     ChangeNotifierProvider(
-      create: (_) => GameState(wordService: WordService())..initializeGame(),
+      create: (_) => GameState(wordService: WordService(), difficulty: '')
+        ..initializeGame(),
       child: const WordleApp(),
     ),
   );

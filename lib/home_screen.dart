@@ -67,7 +67,8 @@ class HomeScreen extends StatelessWidget {
                     context,
                     MaterialPageRoute(
                       builder: (_) => ChangeNotifierProvider(
-                        create: (_) => GameState()..initializeGame(),
+                        create: (_) =>
+                            GameState(difficulty: '')..initializeGame(),
                         child: const GameScreen(),
                       ),
                     ),

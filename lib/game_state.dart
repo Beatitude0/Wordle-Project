@@ -1,11 +1,10 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'word_service.dart';
 
-/// Handles all core game logic and persistent storage.
+/// Handles full Nulldle logic and state.
+/// ✅ Supports Easy/Hard mode with timer, hint, and dynamic reward logic.
 class GameState extends ChangeNotifier {
   final WordService _wordService;
   final int maxGuesses;
@@ -21,11 +20,20 @@ class GameState extends ChangeNotifier {
   };
 
   bool _isGameOver = false;
-  String difficulty = 'Easy';
 
   // Timer
   Timer? _timer;
   int _timeLeft = 0;
+
+  // Difficulty
+  String difficulty = 'Easy';
+
+  // Hint system
+  bool _hintUsed = false;
+  String? _hintLetter;
+
+  // ✅ Tracks rewarded green positions (avoid repeated +5s)
+  final Set<int> _rewardedPositions = {};
 
   GameState({
     WordService? wordService,
@@ -40,41 +48,36 @@ class GameState extends ChangeNotifier {
   bool get isGameOver => _isGameOver;
   String get targetWord => _targetWord;
   int get timeLeft => _timeLeft;
+  bool get hintUsed => _hintUsed;
+  String? get hintLetter => _hintLetter;
 
-  // --- Initialization ---
+  // ---------------- Initialization ----------------
   Future<void> initializeGame() async {
     _dictionary = await _wordService.loadDictionary();
     _targetWord = _wordService.pickRandomWord(_dictionary);
-    _resetState();
-    notifyListeners();
+    if (_targetWord.isEmpty) _targetWord = 'apple';
+    await resetGame();
   }
 
-  void _resetState() {
-    _guesses.clear();
-    _colorHistory.clear();
-    _keyboardColors.updateAll((_, __) => Colors.grey.shade300);
-    _isGameOver = false;
-
-    if (difficulty == 'Hard') {
-      _timeLeft = 60;
-      startTimer();
-    } else {
-      _timeLeft = 0;
-      _timer?.cancel();
-    }
-  }
-
-  // --- Timer logic ---
+  // ---------------- Timer Logic ----------------
   void startTimer() {
     _timer?.cancel();
+    _isGameOver = false;
+
+    if (_timeLeft <= 0) {
+      _timeLeft = 90;
+    }
+
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (_timeLeft > 0) {
+      if (_timeLeft > 0 && !_isGameOver) {
         _timeLeft--;
         notifyListeners();
       } else {
         timer.cancel();
-        _isGameOver = true;
-        notifyListeners();
+        if (!_isGameOver) {
+          _isGameOver = true;
+          notifyListeners(); // triggers timeout popup
+        }
       }
     });
   }
@@ -87,58 +90,21 @@ class GameState extends ChangeNotifier {
     }
   }
 
-  // --- Save game progress ---
-  Future<void> saveGame() async {
-    final prefs = await SharedPreferences.getInstance();
-    final gameData = {
-      'targetWord': _targetWord,
-      'guesses': _guesses,
-      'colorHistory':
-          _colorHistory.map((row) => row.map((c) => c.value).toList()).toList(),
-      'keyboardColors': _keyboardColors.map((k, v) => MapEntry(k, v.value)),
-      'isGameOver': _isGameOver,
-      'difficulty': difficulty,
-      'timeLeft': _timeLeft,
-    };
+  // ---------------- Hint System ----------------
+  String? useHint() {
+    if (_hintUsed || _isGameOver || difficulty != 'Hard') return null;
 
-    await prefs.setString('savedGame', jsonEncode(gameData));
-  }
+    final index = Random().nextInt(_targetWord.length);
+    _hintLetter = _targetWord[index];
+    _hintUsed = true;
 
-  // --- Load game progress ---
-  Future<void> loadGame() async {
-    final prefs = await SharedPreferences.getInstance();
-    final data = prefs.getString('savedGame');
-    if (data == null) return initializeGame();
-
-    final decoded = jsonDecode(data);
-
-    _dictionary = await _wordService.loadDictionary();
-    _targetWord =
-        decoded['targetWord'] ?? _wordService.pickRandomWord(_dictionary);
-    _guesses
-      ..clear()
-      ..addAll(List<String>.from(decoded['guesses'] ?? []));
-    _colorHistory
-      ..clear()
-      ..addAll((decoded['colorHistory'] as List)
-          .map((row) => (row as List).map((v) => Color(v)).toList())
-          .toList());
-    _keyboardColors
-      ..clear()
-      ..addAll((decoded['keyboardColors'] as Map)
-          .map((k, v) => MapEntry(k, Color(v))));
-    _isGameOver = decoded['isGameOver'] ?? false;
-    difficulty = decoded['difficulty'] ?? 'Easy';
-    _timeLeft = decoded['timeLeft'] ?? 0;
-
-    if (difficulty == 'Hard' && !_isGameOver && _timeLeft > 0) {
-      resumeTimer();
-    }
-
+    // Deduct 10 seconds (never below 0)
+    _timeLeft = (_timeLeft - 10).clamp(0, 999);
     notifyListeners();
+    return _hintLetter;
   }
 
-  // --- Submit guess ---
+  // ---------------- Guess Submission ----------------
   String submitGuess(String guess) {
     guess = guess.toLowerCase();
 
@@ -147,8 +113,7 @@ class GameState extends ChangeNotifier {
     if (!_dictionary.contains(guess)) return 'not_in_dictionary';
     if (_guesses.contains(guess)) return 'duplicate';
 
-    final colors = _evaluateGuess(guess, _targetWord);
-    _rewardTime(colors);
+    final colors = _evaluateGuess(guess);
     _guesses.add(guess);
     _colorHistory.add(colors);
     _updateKeyboard(guess, colors);
@@ -169,32 +134,30 @@ class GameState extends ChangeNotifier {
     return 'continue';
   }
 
-  // --- Reward extra time for greens (Hard mode) ---
-  void _rewardTime(List<Color> colors) {
-    if (difficulty != 'Hard') return;
-    int greens = colors.where((c) => c == Colors.green).length;
-    if (greens > 0) {
-      _timeLeft += (5 * greens);
-      notifyListeners();
-    }
-  }
+  // ---------------- Guess Evaluation ----------------
+  List<Color> _evaluateGuess(String guess) {
+    final colors = List<Color>.filled(wordLength, Colors.grey);
+    final used = List<bool>.filled(wordLength, false);
 
-  // --- Evaluate guesses ---
-  List<Color> _evaluateGuess(String guess, String target) {
-    final List<Color> colors = List.filled(wordLength, Colors.grey);
-    final List<bool> used = List.filled(wordLength, false);
-
+    // Pass 1: Greens
     for (int i = 0; i < wordLength; i++) {
-      if (guess[i] == target[i]) {
+      if (guess[i] == _targetWord[i]) {
         colors[i] = Colors.green;
         used[i] = true;
+
+        // ✅ +5s once per position in Hard mode
+        if (difficulty == 'Hard' && !_rewardedPositions.contains(i)) {
+          _rewardedPositions.add(i);
+          _timeLeft += 5;
+        }
       }
     }
 
+    // Pass 2: Yellows
     for (int i = 0; i < wordLength; i++) {
       if (colors[i] == Colors.green) continue;
       for (int j = 0; j < wordLength; j++) {
-        if (!used[j] && guess[i] == target[j]) {
+        if (!used[j] && guess[i] == _targetWord[j]) {
           colors[i] = Colors.yellow;
           used[j] = true;
           break;
@@ -202,10 +165,11 @@ class GameState extends ChangeNotifier {
       }
     }
 
+    notifyListeners();
     return colors;
   }
 
-  // --- Keyboard updates ---
+  // ---------------- Keyboard Update ----------------
   void _updateKeyboard(String guess, List<Color> rowColors) {
     for (int i = 0; i < guess.length; i++) {
       final letter = guess[i].toUpperCase();
@@ -219,18 +183,32 @@ class GameState extends ChangeNotifier {
     }
   }
 
-  // --- Reset game ---
+  // ---------------- Reset Game ----------------
   Future<void> resetGame() async {
     _timer?.cancel();
-    _targetWord = _wordService.pickRandomWord(_dictionary);
-    _resetState();
-    notifyListeners();
-  }
+    _guesses.clear();
+    _colorHistory.clear();
+    _rewardedPositions.clear();
+    _keyboardColors.updateAll((_, __) => Colors.grey.shade300);
+    _isGameOver = false;
+    _hintUsed = false;
+    _hintLetter = null;
 
-  // --- Clear saved data ---
-  Future<void> clearSavedGame() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('savedGame');
+    if (_dictionary.isEmpty) {
+      _dictionary = await _wordService.loadDictionary();
+    }
+
+    _targetWord = _wordService.pickRandomWord(_dictionary);
+    if (_targetWord.isEmpty) _targetWord = 'apple';
+
+    _timeLeft = (difficulty == 'Hard') ? 90 : 0;
+
+    // ✅ Auto-start timer immediately if in Hard mode (for “New Game” flow)
+    if (difficulty == 'Hard') {
+      startTimer();
+    }
+
+    notifyListeners();
   }
 
   @override
