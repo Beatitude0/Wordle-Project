@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'game_state.dart';
 
@@ -10,36 +11,33 @@ class GameScreen extends StatefulWidget {
 }
 
 class _GameScreenState extends State<GameScreen> {
-  final TextEditingController _controller = TextEditingController();
-  bool _showCountdown = false;
-  int _countdown = 3;
+  String _currentGuess = '';
 
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      final game = context.read<GameState>();
-      await game.loadGame();
-
-      if (game.difficulty == 'Hard' && !game.isGameOver) {
-        _showStartHardModePopup(game);
-      }
-    });
-  }
-
-  // --- Common snackbar for feedback ---
+  // --- Snackbars for errors ---
   void _showSnackBar(String message) {
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text(message)));
   }
 
-  // --- Win / Lose popup ---
-  void _showEndDialog(BuildContext context, bool isWin, String word) {
-    final emoji = isWin ? "😄" : "😞";
-    final color = isWin ? Colors.green : Colors.red;
-    final message = isWin
-        ? "You guessed it!\nThe word was: ${word.toUpperCase()}"
-        : "Out of guesses!\nThe word was: ${word.toUpperCase()}";
+  // --- End game popup ---
+  void _showEndDialog(BuildContext context, String result, String word) {
+    String emoji;
+    String message;
+    Color color;
+
+    if (result == 'win') {
+      emoji = "😄";
+      message = "You guessed it!\nThe word was: ${word.toUpperCase()}";
+      color = Colors.green;
+    } else if (result == 'timeout') {
+      emoji = "⏰";
+      message = "You ran out of time!\nThe word was: ${word.toUpperCase()}";
+      color = Colors.red;
+    } else {
+      emoji = "😞";
+      message = "Out of guesses!\nThe word was: ${word.toUpperCase()}";
+      color = Colors.red;
+    }
 
     showDialog(
       context: context,
@@ -49,7 +47,7 @@ class _GameScreenState extends State<GameScreen> {
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(emoji, style: TextStyle(fontSize: 64, color: color)),
+            Text(emoji, style: TextStyle(fontSize: 80, color: color)),
             const SizedBox(height: 16),
             Text(
               message,
@@ -67,11 +65,7 @@ class _GameScreenState extends State<GameScreen> {
           TextButton(
             onPressed: () async {
               Navigator.pop(context);
-              final game = context.read<GameState>();
-              await game.resetGame();
-              if (game.difficulty == 'Hard') {
-                _showStartHardModePopup(game);
-              }
+              await context.read<GameState>().resetGame();
             },
             child: const Text(
               "New Game",
@@ -88,187 +82,122 @@ class _GameScreenState extends State<GameScreen> {
     );
   }
 
-  // --- Out of time popup ---
-  void _showOutOfTimeDialog(BuildContext context, String word) {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => AlertDialog(
-        backgroundColor: Colors.white,
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.timer_off, color: Colors.red, size: 64),
-            const SizedBox(height: 16),
-            Text(
-              "You're out of time!\nThe word was: ${word.toUpperCase()}",
-              textAlign: TextAlign.center,
-              style: const TextStyle(
-                fontFamily: 'Courier',
-                fontSize: 20,
-                color: Colors.pink,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () async {
-              Navigator.pop(context);
-              final game = context.read<GameState>();
-              await game.resetGame();
-              if (game.difficulty == 'Hard') {
-                _showStartHardModePopup(game);
-              }
-            },
-            child: const Text(
-              "New Game",
-              style: TextStyle(
-                fontFamily: 'Courier',
-                color: Colors.pink,
-                fontWeight: FontWeight.bold,
-                fontSize: 20,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+  // --- Handle physical + on-screen key input ---
+  void _onKeyPressed(String key, GameState game) {
+    if (game.isGameOver) return;
 
-  // --- Hard Mode popup ---
-  Future<void> _showStartHardModePopup(GameState game) async {
-    final start = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text(
-          "Start Hard Mode?",
-          style: TextStyle(
-            fontFamily: 'Courier',
-            fontWeight: FontWeight.bold,
-            color: Colors.pink,
-          ),
-        ),
-        content: const Text(
-          "A 3-second countdown will appear before the timer begins.",
-          style: TextStyle(
-            fontFamily: 'Courier',
-            fontSize: 16,
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text(
-              "Cancel",
-              style: TextStyle(
-                fontFamily: 'Courier',
-                color: Colors.grey,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text(
-              "Start",
-              style: TextStyle(
-                fontFamily: 'Courier',
-                color: Colors.pink,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-
-    if (start == true) {
-      await _showHardModeCountdown(game);
-    } else {
-      // 👇 Cancel → revert to Easy mode
-      game.difficulty = 'Easy';
-      await game.resetGame();
-    }
-  }
-
-  // --- Countdown before Hard mode starts ---
-  Future<void> _showHardModeCountdown(GameState game) async {
     setState(() {
-      _showCountdown = true;
-      _countdown = 3;
+      if (key == 'ENTER') {
+        if (_currentGuess.length == game.wordLength) {
+          final result = game.submitGuess(_currentGuess);
+          _currentGuess = '';
+
+          switch (result) {
+            case 'invalid_length':
+              _showSnackBar("Enter exactly ${game.wordLength} letters.");
+              break;
+            case 'not_in_dictionary':
+              _showSnackBar("Not a valid word!");
+              break;
+            case 'duplicate':
+              _showSnackBar("You already guessed that!");
+              break;
+            case 'win':
+              _showEndDialog(context, 'win', game.targetWord);
+              break;
+            case 'lose':
+              _showEndDialog(context, 'lose', game.targetWord);
+              break;
+            case 'timeout':
+              _showEndDialog(context, 'timeout', game.targetWord);
+              break;
+            default:
+              break;
+          }
+        } else {
+          _showSnackBar("Enter ${game.wordLength} letters first!");
+        }
+      } else if (key == 'DEL') {
+        if (_currentGuess.isNotEmpty) {
+          _currentGuess = _currentGuess.substring(0, _currentGuess.length - 1);
+        }
+      } else if (RegExp(r'^[A-Z]$').hasMatch(key)) {
+        if (_currentGuess.length < game.wordLength) {
+          _currentGuess += key;
+        }
+      }
     });
-
-    for (int i = 3; i > 0; i--) {
-      setState(() => _countdown = i);
-      await Future.delayed(const Duration(seconds: 1));
-    }
-
-    setState(() => _showCountdown = false);
-    await game.resetGame();
-
-    game.startTimer(onTimerEnd: () {
-      _showOutOfTimeDialog(context, game.targetWord);
-    });
-  }
-
-  // --- Handle user guesses ---
-  void _handleSubmit(BuildContext context, GameState game) {
-    final guess = _controller.text;
-    _controller.clear();
-
-    final result = game.submitGuess(guess);
-
-    switch (result) {
-      case 'invalid_length':
-        _showSnackBar("Enter exactly 5 letters (A–Z).");
-        break;
-      case 'not_in_dictionary':
-        _showSnackBar("Not a valid word!");
-        break;
-      case 'duplicate':
-        _showSnackBar("You already guessed $guess!");
-        break;
-      case 'win':
-        _showEndDialog(context, true, game.targetWord);
-        break;
-      case 'lose':
-        _showEndDialog(context, false, game.targetWord);
-        break;
-    }
   }
 
   // --- On-screen keyboard ---
-  Widget _buildKeyboard(Map<String, Color> keyboardColors) {
+  Widget _buildKeyboard(Map<String, Color> keyboardColors, GameState game) {
     const rows = ["QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"];
     return Column(
-      children: rows.map((r) {
-        return Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: r.split('').map((letter) {
-            return Container(
-              margin: const EdgeInsets.all(4.0),
-              width: 30,
-              height: 40,
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                color: keyboardColors[letter],
-                borderRadius: BorderRadius.circular(4),
-                border: Border.all(color: Colors.black26),
-              ),
-              child: Text(
-                letter,
-                style: const TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.white,
+      children: [
+        for (final row in rows)
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: row.split('').map((letter) {
+              return GestureDetector(
+                onTap: () => _onKeyPressed(letter, game),
+                child: Container(
+                  margin: const EdgeInsets.all(4.0),
+                  width: 32,
+                  height: 48,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: keyboardColors[letter],
+                    borderRadius: BorderRadius.circular(4),
+                    border: Border.all(color: Colors.black26),
+                  ),
+                  child: Text(
+                    letter,
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.black,
+                    ),
+                  ),
                 ),
-              ),
-            );
-          }).toList(),
-        );
-      }).toList(),
+              );
+            }).toList(),
+          ),
+        const SizedBox(height: 8),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            _keyButton("DEL", Colors.redAccent, game),
+            const SizedBox(width: 8),
+            _keyButton("ENTER", Colors.green, game),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _keyButton(String label, Color color, GameState game) {
+    return GestureDetector(
+      onTap: () => _onKeyPressed(label, game),
+      child: Container(
+        margin: const EdgeInsets.all(4.0),
+        width: 80,
+        height: 48,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: color,
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: Colors.black26),
+        ),
+        child: Text(
+          label,
+          style: const TextStyle(
+            fontFamily: 'Courier',
+            fontWeight: FontWeight.bold,
+            fontSize: 16,
+            color: Colors.white,
+          ),
+        ),
+      ),
     );
   }
 
@@ -279,27 +208,114 @@ class _GameScreenState extends State<GameScreen> {
     final colors = game.colorHistory;
     final keyboardColors = game.keyboardColors;
 
-    return Scaffold(
-      backgroundColor: Colors.white,
-      appBar: AppBar(
-        title: const Text(
-          'Nulldle',
-          style: TextStyle(
-            fontFamily: 'Courier',
-            color: Colors.white,
-            fontWeight: FontWeight.bold,
+    // --- Timer end detection ---
+    if (game.isGameOver && game.difficulty == 'Hard' && game.timeLeft <= 0) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _showEndDialog(context, 'timeout', game.targetWord);
+      });
+    }
+
+    return RawKeyboardListener(
+      focusNode: FocusNode()..requestFocus(),
+      onKey: (event) {
+        if (event is RawKeyDownEvent &&
+            event.logicalKey.keyLabel.isNotEmpty &&
+            event.data.logicalKey.keyLabel != 'Unidentified') {
+          final keyLabel = event.logicalKey.keyLabel.toUpperCase();
+
+          if (keyLabel == 'BACKSPACE') {
+            _onKeyPressed('DEL', game);
+          } else if (keyLabel == 'ENTER' || keyLabel == 'RETURN') {
+            _onKeyPressed('ENTER', game);
+          } else if (RegExp(r'^[A-Z]$').hasMatch(keyLabel)) {
+            _onKeyPressed(keyLabel, game);
+          }
+        }
+      },
+      child: WillPopScope(
+        onWillPop: () async {
+          bool? shouldExit = await showDialog(
+            context: context,
+            builder: (context) => AlertDialog(
+              title: const Text(
+                "Exit to Home?",
+                style: TextStyle(
+                  fontFamily: 'Courier',
+                  fontWeight: FontWeight.bold,
+                  color: Colors.pink,
+                ),
+              ),
+              content: const Text(
+                "Are you sure you want to leave this game and return to the homepage?",
+                style: TextStyle(
+                  fontFamily: 'Courier',
+                  fontSize: 16,
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(false),
+                  child: const Text(
+                    "Cancel",
+                    style: TextStyle(
+                      fontFamily: 'Courier',
+                      color: Colors.grey,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+                TextButton(
+                  onPressed: () {
+                    Navigator.of(context).pop(true);
+                  },
+                  child: const Text(
+                    "Exit",
+                    style: TextStyle(
+                      fontFamily: 'Courier',
+                      color: Colors.red,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          );
+
+          if (shouldExit == true) {
+            Navigator.of(context).pop(); // go back to HomeScreen
+          }
+
+          return false; // prevent automatic pop
+        },
+        child: Scaffold(
+          backgroundColor: Colors.white,
+          appBar: AppBar(
+            title: const Text(
+              'Nulldle',
+              style: TextStyle(
+                fontFamily: 'Courier',
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            backgroundColor: Colors.pink,
+            centerTitle: true,
+            actions: [
+              IconButton(
+                icon: const Icon(Icons.refresh, color: Colors.white),
+                tooltip: "Reset Game",
+                onPressed: () async {
+                  await game.resetGame();
+                  setState(() => _currentGuess = '');
+                },
+              ),
+            ],
           ),
-        ),
-        backgroundColor: Colors.pink,
-        centerTitle: true,
-      ),
-      body: Stack(
-        children: [
-          Padding(
+          body: Padding(
             padding: const EdgeInsets.all(16.0),
             child: Column(
               children: [
-                // --- Difficulty toggle + timer ---
+                // --- Difficulty + timer ---
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
@@ -317,15 +333,54 @@ class _GameScreenState extends State<GameScreen> {
                         Switch(
                           value: game.difficulty == 'Hard',
                           activeColor: Colors.pink,
-                          onChanged: (val) async {
-                            if (val) {
-                              game.difficulty = 'Hard';
-                              await _showStartHardModePopup(game);
-                            } else {
-                              game.difficulty = 'Easy';
-                              await game.resetGame();
-                            }
-                          },
+                          onChanged: game.guesses.isEmpty
+                              ? (val) async {
+                                  if (val) {
+                                    final confirm = await showDialog<bool>(
+                                      context: context,
+                                      builder: (_) => AlertDialog(
+                                        title: const Text(
+                                          "Start Hard Mode?",
+                                          style: TextStyle(
+                                            fontFamily: 'Courier',
+                                            fontWeight: FontWeight.bold,
+                                            color: Colors.pink,
+                                          ),
+                                        ),
+                                        content: const Text(
+                                          "You’ll have limited time to guess the word.\nReady to start?",
+                                          style: TextStyle(
+                                            fontFamily: 'Courier',
+                                            fontSize: 16,
+                                          ),
+                                        ),
+                                        actions: [
+                                          TextButton(
+                                            onPressed: () =>
+                                                Navigator.pop(context, false),
+                                            child: const Text("Cancel"),
+                                          ),
+                                          TextButton(
+                                            onPressed: () =>
+                                                Navigator.pop(context, true),
+                                            child: const Text("Start"),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                    if (confirm == true) {
+                                      game.difficulty = 'Hard';
+                                      await game.resetGame();
+                                      game.startTimer();
+                                    } else {
+                                      game.difficulty = 'Easy';
+                                    }
+                                  } else {
+                                    game.difficulty = 'Easy';
+                                    await game.resetGame();
+                                  }
+                                }
+                              : null,
                         ),
                         Text(
                           game.difficulty,
@@ -359,26 +414,33 @@ class _GameScreenState extends State<GameScreen> {
                       ),
                   ],
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 16),
 
-                // --- Grid ---
+                // --- Game grid ---
                 Expanded(
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: List.generate(game.maxGuesses, (rowIndex) {
-                      String? guess =
-                          rowIndex < guesses.length ? guesses[rowIndex] : null;
+                      String? guess;
+                      if (rowIndex < guesses.length) {
+                        guess = guesses[rowIndex];
+                      } else if (rowIndex == guesses.length) {
+                        guess = _currentGuess;
+                      }
+
                       return Row(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: List.generate(game.wordLength, (colIndex) {
                           String letter = '';
                           Color bgColor = Colors.grey.shade300;
+
                           if (guess != null && colIndex < guess.length) {
                             letter = guess[colIndex].toUpperCase();
                             if (rowIndex < colors.length) {
                               bgColor = colors[rowIndex][colIndex];
                             }
                           }
+
                           return Container(
                             margin: const EdgeInsets.all(4.0),
                             width: 48,
@@ -392,7 +454,7 @@ class _GameScreenState extends State<GameScreen> {
                             child: Text(
                               letter,
                               style: const TextStyle(
-                                color: Colors.white,
+                                color: Colors.black,
                                 fontSize: 20,
                                 fontWeight: FontWeight.bold,
                               ),
@@ -404,86 +466,12 @@ class _GameScreenState extends State<GameScreen> {
                   ),
                 ),
 
-                // --- Input field ---
-                TextField(
-                  controller: _controller,
-                  maxLines: 1,
-                  keyboardType: TextInputType.text,
-                  textInputAction: TextInputAction.done,
-                  decoration: const InputDecoration(
-                    border: OutlineInputBorder(),
-                    hintText: "Enter your guess",
-                  ),
-                  onSubmitted: (_) => _handleSubmit(context, game),
-                ),
-                const SizedBox(height: 12),
-
-                // --- Buttons ---
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    ElevatedButton(
-                      onPressed: () => _handleSubmit(context, game),
-                      child: const Text(
-                        "Submit",
-                        style: TextStyle(
-                          fontFamily: 'Courier',
-                          color: Colors.pink,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 18.0,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    ElevatedButton(
-                      onPressed: () async {
-                        await game.resetGame();
-                        if (game.difficulty == 'Hard') {
-                          _showStartHardModePopup(game);
-                        }
-                      },
-                      child: const Text(
-                        "Reset",
-                        style: TextStyle(
-                          fontFamily: 'Courier',
-                          color: Colors.pink,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 18.0,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                _buildKeyboard(keyboardColors),
+                const SizedBox(height: 16),
+                _buildKeyboard(keyboardColors, game),
               ],
             ),
           ),
-
-          // --- Countdown overlay ---
-          if (_showCountdown)
-            AnimatedSwitcher(
-              duration: const Duration(milliseconds: 400),
-              transitionBuilder: (child, anim) => ScaleTransition(
-                scale: CurvedAnimation(parent: anim, curve: Curves.easeOutBack),
-                child: child,
-              ),
-              child: Container(
-                key: ValueKey(_countdown),
-                color: Colors.white.withOpacity(0.9),
-                alignment: Alignment.center,
-                child: Text(
-                  "$_countdown",
-                  style: const TextStyle(
-                    fontFamily: 'Courier',
-                    fontSize: 140,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.pink,
-                  ),
-                ),
-              ),
-            ),
-        ],
+        ),
       ),
     );
   }
