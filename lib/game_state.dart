@@ -39,6 +39,7 @@ class GameState extends ChangeNotifier {
     WordService? wordService,
     this.maxGuesses = 6,
     this.wordLength = 5,
+    this.difficulty = 'Easy',
   }) : _wordService = wordService ?? WordService();
 
   // --- Getters ---
@@ -216,4 +217,6 @@ class GameState extends ChangeNotifier {
     _timer?.cancel();
     super.dispose();
   }
+
+  void stopAllTimers() {}
 }
